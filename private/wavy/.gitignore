@@ -1,0 +1,5 @@
+# debug files to ignore
+*.sigmf-*
+
+# files rendered by grc
+*.cf32
