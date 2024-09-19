@@ -1,0 +1,6 @@
+# python artifacts
+*.pyc
+*.pyo
+
+# torch artifacts
+*.ckpt
