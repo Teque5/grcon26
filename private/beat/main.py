@@ -366,15 +366,16 @@ class BeatDataset(Dataset):
         """
         if self.corpus[cdx]["label"] == "_":
             # special handling for space symbol
-            offset = 0
+            offset = padding
+            rms = 1
         else:
             # calculate offset into file
             offset = self.corpus[cdx][self.selection][sdx]
             if padding:
                 # when padding needed, ensure we don't exceed memory boundaries
                 offset = max(padding, offset)
-        # retrieve precalculated rms
-        rms = self.corpus[cdx]["rms"][offset]
+            # retrieve precalculated rms
+            rms = self.corpus[cdx]["rms"][offset]
         # read and scale samples
         x_data = self.corpus[cdx]["samples"][offset - padding : offset + self.slice_length + padding] / rms * AUDIO_RMS
         return x_data
