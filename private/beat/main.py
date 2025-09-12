@@ -565,6 +565,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     log.debug(args)
 
+    # use avg multiclass accuracy at 0dB SNR as selection criteria
     ckpt_best = None
     # ckpt_best = "sb-val_loss=0.001.ckpt" # 4-stage curr pretrain 0dB 38.2%
     # ckpt_best = "sb-val_loss=0.00001.ckpt" # 2-stage curr scratch 0dB 11.05%
@@ -635,12 +636,29 @@ if __name__ == "__main__":
             for batch in loader:
                 pass
             log.info(f"read training epoch in {time.time() - starttime:.3f} s")
+
+        # benchmark model speed
+        model = SymbolDetector.load_from_checkpoint(ckpt_best)
+        model = model.eval()
+        if False:
+            # use jit compile for extra speed?
+            model = model.to_torchscript(file_path="/tmp/model.pt", method="script")
+            _ = model(torch.randn(1, 1, 129, 157))
+            log.info("model warmed up")
+        elap = 0
+        for bdx, batch in enumerate(loader):
+            starttime = time.time()
+            _ = model(batch[0])
+            elap += time.time() - starttime
+        log.info(f"processed {batch[0].size(0)*(bdx+1)} samples in {elap:.3f} s")
+        # log per-sample latency
+        log.info(f"latency {elap/((bdx+1)*batch[0].size(0))*1000:.3f} ms/sample")
         sys.exit(0)
 
     if args.train:
         # do full curriculum training
         # allow 30 epochs per lesson, infinite in final
-        ds = BeatDataset(BEAT_PATH, args.slice_length, "test")
+        ds = BeatDataset(BEAT_PATH, args.slice_length, "val")
         num_classes = ds.num_classes
 
         log.info("lesson 0: easy")
@@ -678,7 +696,7 @@ if __name__ == "__main__":
         log.info("evaluation start")
         model = SymbolDetector.load_from_checkpoint(ckpt_best)
         model = model.eval()
-        ds = BeatDataset(BEAT_PATH, args.slice_length, "val")
+        ds = BeatDataset(BEAT_PATH, args.slice_length, "test")
         num_classes = ds.num_classes
         loader = torch.utils.data.DataLoader(ds, batch_size=32, num_workers=2)
         for snr_db in np.linspace(10, -10, 11):
