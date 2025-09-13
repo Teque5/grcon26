@@ -11,6 +11,11 @@ TODO
 * balance my dataset? it's kinda balanced...
 * add symbol edge marker &target
 * add weight saving .pt
+* space detection is poor, why?
+
+2025 TODO
+--------
+* Can we dispense w/madgrad and just use Adam?
 
 Record
 ------
@@ -23,11 +28,13 @@ pretrain, madgrad,            55, 0.00529, converged w/o curriculum training ver
 no-pretrain, adam,      30+40=70, 0.00227, version2, pretty good
 no-pretrain, madgrad, 30+287=117,       0, version3, 100% accuracy
 no-pretrain, madgrad, 30+30+114=174, 0.00052, allsym, space detect not working
-
+no-pretrain, madgrad, 30+30+176=236, 0.01543, allsym, new loss func, 6.3% acc???
+no-pretrain, madgrad, 30+30+192=252, 0.05142, allsym, easy/medium/hard curriculum, 94.51% acc @0dB
 
 Notes
 -----
-* Pretrained weights negligible impact
+* Pretrained weights are useless
+* curriculum training is helpful as usual
 """
 import argparse
 import logging
@@ -42,8 +49,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import soundfile
 import torch
-import torchmetrics
-from einops import rearrange
 from madgrad import MADGRAD
 from rich.logging import RichHandler
 from scipy.signal import chirp, firwin, lfilter, resample_poly
@@ -211,8 +216,8 @@ class BeatDataset(Dataset):
     def add_space_symbol(self):
         self.corpus += [{
             "label" : "_",
-            # amount could be slice length, but need extra for potential offset
-            "samples" : torch.zeros(self.slice_length * 2, dtype=torch.float32),
+            # amount could be slice length, but need extra for potential padding
+            "samples" : torch.zeros(self.slice_length + self.fftsize, dtype=torch.float32),
             "rms" : torch.ones(1, dtype=torch.float32),
             "sample_rate" : self.samp_rate,
             "train_indices" : torch.zeros(1, dtype=torch.int32),
@@ -365,9 +370,8 @@ class BeatDataset(Dataset):
         optional padding extends both left and right edges for windowing
         """
         if self.corpus[cdx]["label"] == "_":
-            # special handling for space symbol
-            offset = padding
-            rms = 1
+            # special handling for space symbol, just zeros
+            x_data = self.corpus[cdx]["samples"][0:self.slice_length + padding * 2]
         else:
             # calculate offset into file
             offset = self.corpus[cdx][self.selection][sdx]
@@ -376,15 +380,21 @@ class BeatDataset(Dataset):
                 offset = max(padding, offset)
             # retrieve precalculated rms
             rms = self.corpus[cdx]["rms"][offset]
-        # read and scale samples
-        x_data = self.corpus[cdx]["samples"][offset - padding : offset + self.slice_length + padding] / rms * AUDIO_RMS
+            # read and scale samples
+            x_data = self.corpus[cdx]["samples"][offset - padding : offset + self.slice_length + padding] / rms * AUDIO_RMS
         return x_data
 
     def set_easy_train_snr_db(self):
+        # Mean = 3 / (3 + 3) = 0.5 -> 15 dB
         self.snr_dist = torch.distributions.Beta(3, 3)
 
-    def set_hard_train_snr_db(self):
+    def set_medium_train_snr_db(self):
+        # Mean = 2 / (2 + 3) = 0.4 -> 12 dB
         self.snr_dist = torch.distributions.Beta(2, 3)
+
+    def set_hard_train_snr_db(self):
+        # Mean = 1.3 / (1.3 + 3) = 0.3 -> 5 dB
+        self.snr_dist = torch.distributions.Beta(1.3, 3)
 
     def sample_train_snr_db(self) -> float:
         """beta is on interval (0,1) and we want SNRs on interval (-10, 50)"""
@@ -494,13 +504,12 @@ class SymbolDetector(L.LightningModule):
         # use pretrained weights
         # self.submodel = mobilenet_v3_small(weights=MobileNet_V3_Small_Weights)
         # self.submodel.classifier[3] = torch.nn.Linear(1024, num_classes, bias=True)
-
         # overrite final layer for our custom # of classes
-        if False:
-            self.submodel = ResNet(BasicBlock, [2, 2, 2, 2], num_classes)
-            # override initial layer so we can consume a single channel
-            self.submodel.conv1 = torch.nn.Conv2d(1, 64, kernel_size=(7, 1), stride=2, padding=3, bias=False)
-        self.criterion = torch.nn.BCEWithLogitsLoss()
+        # if False:
+        #     self.submodel = ResNet(BasicBlock, [2, 2, 2, 2], num_classes)
+        #     # override initial layer so we can consume a single channel
+        #     self.submodel.conv1 = torch.nn.Conv2d(1, 64, kernel_size=(7, 1), stride=2, padding=3, bias=False)
+        self.criterion = torch.nn.CrossEntropyLoss()
 
     def freeze_submodel(self, requires_grad: bool = False):
         """freeze the feature extractor weights for transfer learning"""
@@ -537,8 +546,8 @@ class SymbolDetector(L.LightningModule):
 
     def configure_optimizers(self):
         # Adam is effective, but madgrad can get you there faster with more noisy results.
-        # return torch.optim.Adam(self.parameters(), lr=1e-3)
-        return MADGRAD(self.parameters(), lr=1e-2)  # madgrad needs 10x adam LR
+        return torch.optim.Adam(self.parameters(), lr=3e-4)
+        # return MADGRAD(self.parameters(), lr=1e-2)  # madgrad needs 10x adam LR
 
 
 def create_callbacks_loggers(lesson: int) -> dict:
@@ -565,21 +574,14 @@ if __name__ == "__main__":
     args = parser.parse_args()
     log.debug(args)
 
-    # use avg multiclass accuracy at 0dB SNR as selection criteria
-    ckpt_best = None
-    # ckpt_best = "sb-val_loss=0.001.ckpt" # 4-stage curr pretrain 0dB 38.2%
-    # ckpt_best = "sb-val_loss=0.00001.ckpt" # 2-stage curr scratch 0dB 11.05%
-    # ckpt_best = "lightning_logs/dlesson_2/version_4/checkpoints/sb-epoch=114-val_loss=0.00035.ckpt" # 0dB 11.8%
-    # ckpt_best = "lightning_logs/dlesson_2/version_3/checkpoints/sb-epoch=237-val_loss=0.00001.ckpt" # 0dB 11.4%
-    # 0dB 11.15%
+    # use mean multiclass accuracy at 0dB SNR as criteria
     # ckpt_best = 'allsym_0db=22.29.ckpt' # 0db 22.29%
-    ckpt_best = 'allsym_0db=18.82.ckpt'
+    # ckpt_best = 'allsym_0db=18.82.ckpt' # 0db 18.82%
+    ckpt_best = 'sb_0dB94p51_b9565f78.ckpt'
 
     if args.write:
-        ds = BeatDataset(BEAT_PATH, args.slice_length, "train")
-        # message = "abcd" * 10
-        # message = "the&quick&brown&fox&jumped&over&the&lazy&dog" * 4
-        _ = ds.generate(args.write, target=TMP_PATH / "trash.wav")
+        ds = BeatDataset(BEAT_PATH, args.slice_length, "train", add_noise=False)
+        _ = ds.generate(args.write.replace(' ', '_'), target=TMP_PATH / "trash.wav")
         sys.exit(0)
 
     if args.read:
@@ -619,8 +621,7 @@ if __name__ == "__main__":
         xxx = np.linspace(0, results.size(0) / (args.slice_length // stepsize), results.size(0))
         for cdx in range(len(labels)):
             char = labels[cdx]
-            # if char in "abcd":
-            plt.plot(xxx, results[:, cdx].detach().numpy(), label=char)
+            plt.plot(xxx, results[:, cdx].detach().numpy(), label=char, lw=0.5 if char != '_' else 2, ls="solid" if char != '_' else "dotted")
             # plt.axvline(44.1/2 + 44100//5//2/100 * cdx)
 
         plt.show()
@@ -661,29 +662,24 @@ if __name__ == "__main__":
         ds = BeatDataset(BEAT_PATH, args.slice_length, "val")
         num_classes = ds.num_classes
 
-        log.info("lesson 0: easy")
-        dm = BeatDatamodule(slice_length=args.slice_length, add_noise=False)
+        log.info("lesson 0: easy (μSNR=15 dB)")
+        dm = BeatDatamodule(slice_length=args.slice_length)
         model = SymbolDetector(num_classes)
         # model = SymbolDetector.load_from_checkpoint(ckpt_best)
-        # sample_data = ds[0][0].unsqueeze(0)
-        # _ = summary(model, input_data=sample_data)
-        # model.freeze_submodel(requires_grad=False)
         trainer = L.Trainer(max_epochs=30, **create_callbacks_loggers(0))
         trainer.fit(model, datamodule=dm)
         ckpt_best = trainer.checkpoint_callback.best_model_path
         log.info(f"lesson 0: finished with {ckpt_best}")
 
-        log.info("lesson 1: medium (add noise)")
-        dm.data_train.add_noise = True
-        dm.data_val.add_noise = True
+        log.info("lesson 1: medium (μSNR=12 dB)")
+        dm.data_train.set_medium_train_snr_db()
         model = SymbolDetector.load_from_checkpoint(ckpt_best)
-        # model.freeze_submodel(requires_grad=False)
         trainer = L.Trainer(max_epochs=30, **create_callbacks_loggers(1))
         trainer.fit(model, datamodule=dm)
         ckpt_best = trainer.checkpoint_callback.best_model_path
         log.info(f"lesson 1: finished with {ckpt_best}")
 
-        log.info("lesson 2: hard (low SNR)")
+        log.info("lesson 2: hard (μSNR=5 dB)")
         dm.data_val.val_test_snr_db = 0
         dm.data_train.set_hard_train_snr_db()
         model = SymbolDetector.load_from_checkpoint(ckpt_best)
@@ -710,6 +706,9 @@ if __name__ == "__main__":
                 accuracy.update(preds=logits, target=yyy)
             if snr_db in [0, 10]:
                 confusion.plot(labels=ds.labels)
+                # print per-class accuracy
+                # for cdx in range(num_classes):
+                #     log.debug(f"Accuracy {ds.labels[cdx]}: {accuracy.compute()[cdx]:.2%}")
                 accuracy.plot()
                 plt.show()
             # print(accuracy.compute())
