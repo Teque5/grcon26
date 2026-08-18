@@ -36,6 +36,7 @@ Notes
 * Pretrained weights are useless
 * curriculum training is helpful as usual
 """
+
 import argparse
 import logging
 import os
@@ -64,7 +65,7 @@ from torchvision.models.mobilenetv3 import (
 from torchvision.models.resnet import BasicBlock, ResNet, resnet18
 
 FORMAT = "%(message)s"
-logging.basicConfig(level=logging.DEBUG, format=FORMAT, datefmt="[%X]", handlers=[RichHandler()])
+logging.basicConfig(level=logging.INFO, format=FORMAT, datefmt="[%X]", handlers=[RichHandler()])
 log = logging.getLogger("rich")
 logging.getLogger("matplotlib.font_manager").disabled = True
 
@@ -331,7 +332,7 @@ class BeatDataset(Dataset):
         #     perm = torch.randperm(indices.size)
         #     indices = indices[perm]
 
-        # log.debug(f"train/val/test split ({folds_train}, {folds_val}, {folds_test})")
+        # log.info(f"train/val/test split ({folds_train}, {folds_val}, {folds_test})")
         return indices_train, indices_val, indices_test
 
     def generate(self, message: str, target=None):
@@ -371,7 +372,7 @@ class BeatDataset(Dataset):
         """
         if self.corpus[cdx]["label"] == "_":
             # special handling for space symbol, just zeros
-            x_data = self.corpus[cdx]["samples"][0:self.slice_length + padding * 2]
+            x_data = self.corpus[cdx]["samples"][0 : self.slice_length + padding * 2]
         else:
             # calculate offset into file
             offset = self.corpus[cdx][self.selection][sdx]
@@ -572,16 +573,16 @@ if __name__ == "__main__":
     parser.add_argument("--slice-length", type=int, default=44100 // 5 // 2)
 
     args = parser.parse_args()
-    log.debug(args)
+    log.info(args)
 
     # use mean multiclass accuracy at 0dB SNR as criteria
     # ckpt_best = 'allsym_0db=22.29.ckpt' # 0db 22.29%
     # ckpt_best = 'allsym_0db=18.82.ckpt' # 0db 18.82%
-    ckpt_best = 'sb_0dB94p51_b9565f78.ckpt'
+    ckpt_best = 'sb_0dB98p65_3c02a5a4.ckpt'
 
     if args.write:
         ds = BeatDataset(BEAT_PATH, args.slice_length, "train", add_noise=False)
-        _ = ds.generate(args.write.replace(' ', '_'), target=TMP_PATH / "trash.wav")
+        _ = ds.generate(args.write.replace(" ", "_"), target=TMP_PATH / "trash.wav")
         sys.exit(0)
 
     if args.read:
@@ -602,11 +603,12 @@ if __name__ == "__main__":
         idx = 0
         for bdx, batch in enumerate(loader):
             # batch consists of just x since we don't know y
+            batch = batch.to(model.device)
             logits = model(batch)
             smlogits = torch.nn.functional.softmax(logits, dim=1)
-            results[idx : idx + smlogits.size(0)] = smlogits
+            results[idx : idx + smlogits.size(0)] = smlogits.cpu()
             idx += smlogits.size(0)
-        log.info(f"processed in {time.time()-starttime:.2f} s")
+        log.info(f"processed in {time.time() - starttime:.2f} s")
         decoded = ""
         for idx, cdx in enumerate(results.argmax(dim=1)):
             if idx % stride == 0:
@@ -644,16 +646,16 @@ if __name__ == "__main__":
         if False:
             # use jit compile for extra speed?
             model = model.to_torchscript(file_path="/tmp/model.pt", method="script")
-            _ = model(torch.randn(1, 1, 129, 157))
+            _ = model(torch.randn(1, 1, 129, 157).to(model.device))
             log.info("model warmed up")
         elap = 0
         for bdx, batch in enumerate(loader):
             starttime = time.time()
-            _ = model(batch[0])
+            _ = model(batch[0].to(model.device))
             elap += time.time() - starttime
-        log.info(f"processed {batch[0].size(0)*(bdx+1)} samples in {elap:.3f} s")
+        log.info(f"processed {batch[0].size(0) * (bdx + 1)} samples in {elap:.3f} s")
         # log per-sample latency
-        log.info(f"latency {elap/((bdx+1)*batch[0].size(0))*1000:.3f} ms/sample")
+        log.info(f"latency {elap / ((bdx + 1) * batch[0].size(0)) * 1000:.3f} ms/sample")
         sys.exit(0)
 
     if args.train:
@@ -701,6 +703,8 @@ if __name__ == "__main__":
             accuracy = MulticlassAccuracy(num_classes=num_classes, average=None)
             for batch in loader:
                 xxx, yyy = batch
+                xxx = xxx.to(model.device)
+                yyy = yyy.to(model.device)
                 logits = model(xxx)
                 confusion.update(preds=logits, target=yyy)
                 accuracy.update(preds=logits, target=yyy)
@@ -708,7 +712,7 @@ if __name__ == "__main__":
                 confusion.plot(labels=ds.labels)
                 # print per-class accuracy
                 # for cdx in range(num_classes):
-                #     log.debug(f"Accuracy {ds.labels[cdx]}: {accuracy.compute()[cdx]:.2%}")
+                #     log.info(f"Accuracy {ds.labels[cdx]}: {accuracy.compute()[cdx]:.2%}")
                 accuracy.plot()
                 plt.show()
             # print(accuracy.compute())

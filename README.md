@@ -1,6 +1,6 @@
-# Challenges for GRCon25
+# Challenges for GRCon26
 
-GNU Radio Conference 2025 in XXXXXXX(location) on XXXX-XX-XX
+GNU Radio Conference 2026 at North Carolina State University in September 2026.
 
 ## Overview
 
@@ -16,9 +16,9 @@ All challenges should be released sequentially over the _first_ day at GRCon.
 
 ## Prior Work
 
-* Our 2022 challenge repository [can be found here](https://github.com/bebau/grcon22).
-* Our 2023 challenge repository [can be found here](https://github.com/Teque5/grcon23).
-* Our 2024 challenge repository [can be found here](https://github.com/Teque5/grcon24).
+* Our [2022 challenge repository](https://github.com/bebau/grcon22).
+* Our [2023 challenge repository](https://github.com/Teque5/grcon23).
+* Our [2024 challenge repository](https://github.com/Teque5/grcon24).
 
 ## Raw Ideas
 
